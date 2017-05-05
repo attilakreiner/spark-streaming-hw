@@ -13,8 +13,8 @@ object StreamingExample {
   def main(args: Array[String]): Unit = {
     require(args.length == 4, "Provide parameters in this order: actorsDataFolderPath, ratingEventsDataFolderPath, minimumNumberOfVotes, minimumNumberOfMovies")
 
-    val actorsFolder = args(0);
-    val ratingFolder = args(1);
+    val actorsFolder = args(0)
+    val ratingFolder = args(1)
     val minimumNumberOfVotes = args(2).toInt
     val minimumNumberOfMovies = args(3).toInt
 
@@ -91,6 +91,9 @@ object StreamingExample {
   }
 
 
+  private def splitLine(line: String) =
+    line.split("\t")
+
   /**
     * function implementing task 1
     *
@@ -100,10 +103,18 @@ object StreamingExample {
     *         - number of movies where the actor played since the beginning of time
     */
   def task1(actorsOfMovies: InputDStream[String]): DStream[(String, Long)] = {
+    def processActorLine(line: String) = {
+      val actor = splitLine(line).head
+      (actor, 1)
+    }
 
-    // == DELETE THE NEXT LINE AND ADD YOUR OWN IMPLEMENTATION ==
-    actorsOfMovies.map(line => ("Chuck Norris!", 100000L))
+    def updateActorState(newValues: Seq[Int], runningCount: Option[Long]): Option[Long] = {
+      val previousCount = runningCount.getOrElse(0L)
+      val currentCount = newValues.sum
+      Some(previousCount + currentCount)
+    }
 
+    actorsOfMovies.map(processActorLine).updateStateByKey(updateActorState)
   }
 
 
@@ -122,9 +133,53 @@ object StreamingExample {
     */
   def task2(actorsOfMovies: InputDStream[String], movieRatingEvents: InputDStream[String]): DStream[(String, Long, Float)] = {
 
-    // == DELETE THE NEXT LINE AND ADD YOUR OWN IMPLEMENTATION ==
-    actorsOfMovies.map(line => ("Chuck Norris!", 10000000L, 10.0f))
+    def processMovieLine(line: String) = {
+      val Array(rating, movie, _) = splitLine(line)
+      (movie, rating.toLong)
+    }
 
+    def updateMovieState(newValues: Seq[Long], runningSumAndCount: Option[(Long, Long)]): Option[(Long, Long)] = {
+      val (previousSum, previousCount) = runningSumAndCount.getOrElse(0L, 0L)
+      val currentSum = newValues.sum
+      val currentCount = newValues.size
+      val newSum = previousSum + currentSum
+      val newCount = previousCount + currentCount
+      Some(newSum, newCount)
+    }
+
+    def processActorLine(line: String) = {
+      val Array(actor, movie, _) = splitLine(line)
+      (movie, actor)
+    }
+
+    def processMovieWithActorStream(tuple: (String, ((Long, Long), String))) = {
+      val (movie, ((movieVoteSum, movieVoteCount), actor)) = tuple
+      (actor, (movieVoteSum, movieVoteCount))
+    }
+
+    def updateActorState(newValues: Seq[(Long, Long)], runningSumAndCount: Option[(Long, Long)]): Option[(Long, Long)] = {
+      val (previousSum, previousCount) = runningSumAndCount.getOrElse(0L, 0L)
+      val (currentSum, currentCount) = addTuples(newValues)
+      val newSum = previousSum + currentSum
+      val newCount = previousCount + currentCount
+      Some(newSum, newCount)
+    }
+
+    def addTuples(tuples: Seq[(Long, Long)]) = {
+      tuples.foldLeft(0L, 0L) { case (result, i) => (result._1 + i._1, result._2 + i._2) }
+    }
+
+    def processActorRatingStream(tuple: (String, (Long, Long))) = {
+      val (actor, (allMovieVoteSum, allMovieVoteCount)) = tuple
+      val allMovieVoteAverage = allMovieVoteSum.toFloat / allMovieVoteCount
+      (actor, allMovieVoteCount * 1000, allMovieVoteAverage)
+    }
+
+    val movieStream = movieRatingEvents.map(processMovieLine).updateStateByKey(updateMovieState)
+    val actorStream = actorsOfMovies.map(processActorLine)
+    val movieWithActorStream = movieStream.join(actorStream)
+    val actorRatingStream = movieWithActorStream.map(processMovieWithActorStream)
+    actorRatingStream.updateStateByKey(updateActorState).map(processActorRatingStream)
   }
 
 
@@ -143,9 +198,24 @@ object StreamingExample {
             numberOfMoviesByActors: DStream[(String, Long)],
             minimumNumberOfMovies: Int): DStream[(String, Float, Long)] = {
 
-    // == DELETE THE NEXT LINE AND ADD YOUR OWN IMPLEMENTATION ==
-    numberOfMoviesByActors.map(line => ("Chuck Norris!", 10.0f, 100000L))
+    def processActorRatingStream(tuple: (String, Long, Float)) = {
+      val (actor, votes, rating) = tuple
+      (actor, rating)
+    }
 
+    def processActorWithMovieStream(tuple: (String, (Float, Long))) = {
+      val (actor, (rating, movies)) = tuple
+      (actor, rating, movies)
+    }
+
+    def filterByMovies(tuple: (String, Float, Long)) = {
+      val (actor, rating, movies) = tuple
+      movies >= minimumNumberOfMovies
+    }
+
+    val actorRatingStream = actorRatingsSinceBeginningOfTime.map(processActorRatingStream)
+    val actorWithMovieStream = actorRatingStream.join(numberOfMoviesByActors).map(processActorWithMovieStream)
+    actorWithMovieStream.filter(filterByMovies)
   }
 
 
